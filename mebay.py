@@ -10,13 +10,12 @@ class Reg_Mebay_ident(Reg):
     of manufacturer code and model number."""
 
     def __init__(self):
-        super().__init__(0x1048, 3)
+        super().__init__(0x1048, 2)
 
     def decode(self, values):
         model_number = values[0]
         hw_version = values[1]
-        sw_version = values[2]
-        ident_str = f"{ model_number }-{ hw_version }-{ sw_version }"
+        ident_str = f"{ model_number }-{ hw_version }"
         return self.update(ident_str)
 
 # Mebay alarms code map; only one alarm at a time
@@ -70,6 +69,9 @@ warning_code_3 = { # 0x1045
     13: "Under battery voltage",
 }
 
+warning_code_4 = { # 0x1044
+}
+
 class Reg_Mebay_alarms(Reg):
     def __init__(self):
         super().__init__(0x1043, 5)
@@ -110,30 +112,30 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
             0x1041,
             "/StatusCode",
             {
-                0: 0,  # Stop idle speed = Stopped
-                1: 0,  # Under stop = Stopped
+                0: 9,  # Stop idle speed = Stopping
+                1: 9,  # Under stop = Stopping
                 2: 0,  # Waiting = Stopped
                 3: 9,  # Crank cancel = Stopping
-                4: 9,  # Crank ready =
+                4: 0,  # Crank ready =
                 5: 0,  # Alarm reset =
                 6: 0,  # Standby = Stopped
-                7: 0,  # Pre-heat = Starting
-                8: 0,  # Pre-oil supply = Starting
-                9: 0,  # Crank delay = Starting
-                10: 0,  # Crank ready = Starting
-                11: 0,  # In crank = Starting
-                12: 0,  # Safety delay = Starting
-                13: 0,  # Idle speed = Starting
-                14: 0,  # Speed-up = Starting
-                15: 0,  # Tempurature-up = Starting
-                16: 0,  # Volt-buildup = Starting
-                17: 0,  # High-speed warning = Error
-                18: 0,  # Rated running = Running
-                19: 0,  # Mains revert =
-                20: 0,  # Cooling running = Stopping
-                21: 0,  # Gen return =
-                22: 0,  # Under stop by radiator = Stopping
-                23: 0,  # Switching =
+                7: 2,  # Pre-heat = Starting
+                8: 2,  # Pre-oil supply = Starting
+                9: 2,  # Crank delay = Starting
+                10: 3,  # Crank ready = Starting
+                11: 3,  # In crank = Starting
+                12: 3,  # Safety delay = Starting
+                13: 3,  # Idle speed = Starting
+                14: 3,  # Speed-up = Starting
+                15: 3,  # Tempurature-up = Starting
+                16: 3,  # Volt-buildup = Starting
+                17: 3,  # High-speed waming = Starting
+                18: 8,  # Rated running = Running
+                19: 8,  # Mains revert (transfer back to mains) = Stopping
+                20: 9,  # Cooling running (cool down) = Stopping
+                21: 9,  # Gen return (stop idle time) = Stopping
+                22: 9,  # Under stop by radiator = Stopping
+                23: 9,  # Switching = Stopping
             },
         )
 
@@ -145,35 +147,24 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
 
     def alarm_changed(self, reg):
         eids = []
+
         # alarms -- shutdown
         if reg.value[0] in alarm_codes:
             eids.append( ("e", reg.value[0]) )
     
-        # table 1
-        for v in enumerate(unpack_bits(reg.value[4])):
-            if v[1]:
-                eids.append( ("w", 0x0 + v[0]) )
-
-        # table 2
-        for v in enumerate(unpack_bits(reg.value[3])):
-            if v[1]:
-                eids.append( ("w", 0x10 + v[0]) )
-
-        # table 3
-        for v in enumerate(unpack_bits(reg.value[2])):
-            if v[1]:
-                eids.append( ("w", 0x20 + v[0]))
-
-        # table 4
-        for v in enumerate(unpack_bits(reg.value[1])):
-            if v[1]:
-                eids.append( ("w", 0x30 + v[0]))
+        # warnings -- there are 4 registers with 16-bits each
+        for i, bits in enumerate(reg.value[1:][::-1]):
+            offset = 0x10 * i
+            for v in enumerate(unpack_bits(bits)):
+                if v[1]:
+                    eids.append( ("w", offset + v[0]) )
 
         self.set_error_ids(eids)
 
     def device_init(self):
         self.data_regs = [
             self.running_status_reg,
+            self.engine_speed_reg,
             Reg_u16(0x101B, "/Ac/Power", 1, "%.0f W"),
             Reg_u16(0x1018, "/Ac/L1/Power", 1, "%.0f W"),
             Reg_u16(0x1019, "/Ac/L2/Power", 1, "%.0f W"),
@@ -185,14 +176,13 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
             Reg_u16(0x1011, "/Ac/L2/Current", 1, "%.0f A"),
             Reg_u16(0x1012, "/Ac/L3/Current", 1, "%.0f A"),
             Reg_u16(0x1009, "/Ac/Frequency", 10, "%.1f Hz"),
-            self.engine_speed_reg,
             Reg_u16(0x1054, "/Engine/CoolantTemperature", 1, "%.1f C"),
             Reg_u16(0x1053, "/Engine/OilPressure", 1, "%.0f kPa"),
             Reg_u16(0x1039, "/Engine/Load", 1, "%.0f %%"),
             Reg_u16(0x1035, "/Engine/Starts", 1, "%.0f"),
             Reg_u32b(0x1036, "/Engine/OperatingHours", 1 / 3600, "%.1f s"),
             Reg_u16(0x1001, "/StarterVoltage", 10, "%.1f V"),
-            Reg_map(
+            Reg_mapu16(
                 0x103F,
                 "/RemoteStartModeEnabled",
                 {
@@ -202,12 +192,8 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
                     0x00CC: 0,  # Test on load mode
                 },
             ),
-
             Reg_Mebay_alarms(),
         ]
-
-        # Check, if status register is implemented on controller
-        self.init_status_code = self.read_register(self.running_status_reg)
 
     def device_init_late(self):
         super().device_init_late()
@@ -216,9 +202,10 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
         if "/FirmwareVersion" not in self.dbus:
             self.dbus.add_path("/FirmwareVersion", None)
 
-        is_running = self.init_status_code > 0
+        # check if generator is running
+        is_running = self.read_register(self.running_status_reg) > 0
 
-        # Add /Start path, if GenComm System Control Functions
+        # Add /Start path
         self.dbus.add_path(
             "/Start",
             1 if is_running else 0,
@@ -257,12 +244,11 @@ class Mebay_DC40x_Generator(Mebay_Generator):
     pass
 
 models = {
-    "1-4623": {
-        "model": "DC40x",
+    "16576-512": {
+        "model": "DC40R",
         "handler": Mebay_DC40x_Generator,
     },
 }
-
 
 probe.add_handler(
     probe.ModelRegister(Reg_Mebay_ident(), models, methods=["rtu"], units=[16])
