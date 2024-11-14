@@ -142,6 +142,7 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
         self.engine_speed_reg = Reg_u16(0x1000, "/Engine/Speed", 1, "%.0f RPM")
 
         self.info_regs = [
+            Reg_u16(0x1048, "/Serial"),
             Reg_u16(0x104A, "/FirmwareVersion"),  # Software version
         ]
 
@@ -167,62 +168,78 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
             self.engine_speed_reg,
             Reg_u16(0x101B, "/Ac/Power", 1, "%.0f W"),
             Reg_u16(0x1018, "/Ac/L1/Power", 1, "%.0f W"),
-            Reg_u16(0x1019, "/Ac/L2/Power", 1, "%.0f W"),
-            Reg_u16(0x101A, "/Ac/L3/Power", 1, "%.0f W"),
+            # Reg_u16(0x1019, "/Ac/L2/Power", 1, "%.0f W"),
+            # Reg_u16(0x101A, "/Ac/L3/Power", 1, "%.0f W"),
             Reg_u16(0x100A, "/Ac/L1/Voltage", 1, "%.0f V"),
-            Reg_u16(0x100B, "/Ac/L2/Voltage", 1, "%.0f V"),
-            Reg_u16(0x100C, "/Ac/L3/Voltage", 1, "%.0f V"),
+            # Reg_u16(0x100B, "/Ac/L2/Voltage", 1, "%.0f V"),
+            # Reg_u16(0x100C, "/Ac/L3/Voltage", 1, "%.0f V"),
             Reg_u16(0x1010, "/Ac/L1/Current", 1, "%.0f A"),
-            Reg_u16(0x1011, "/Ac/L2/Current", 1, "%.0f A"),
-            Reg_u16(0x1012, "/Ac/L3/Current", 1, "%.0f A"),
+            # Reg_u16(0x1011, "/Ac/L2/Current", 1, "%.0f A"),
+            # Reg_u16(0x1012, "/Ac/L3/Current", 1, "%.0f A"),
             Reg_u16(0x1009, "/Ac/Frequency", 10, "%.1f Hz"),
             Reg_u16(0x1054, "/Engine/CoolantTemperature", 1, "%.1f C"),
             Reg_u16(0x1053, "/Engine/OilPressure", 1, "%.0f kPa"),
             Reg_u16(0x1039, "/Engine/Load", 1, "%.0f %%"),
             Reg_u16(0x1035, "/Engine/Starts", 1, "%.0f"),
-            Reg_u32b(0x1036, "/Engine/OperatingHours", 1 / 3600, "%.1f s"),
+            Reg_u32b(0x1036, "/Engine/OperatingHours", 10, "%.1f s"),
             Reg_u16(0x1001, "/StarterVoltage", 10, "%.1f V"),
-            Reg_mapu16(
-                0x103F,
-                "/RemoteStartModeEnabled",
-                {
-                    0x0033: 0,  # Stop mode
-                    0x0066: 0,  # Manual mode
-                    0x0099: 1,  # Auto mode
-                    0x00CC: 0,  # Test on load mode
-                },
-            ),
+            #Reg_mapu16(
+            #    0x103F,
+            #    "/RemoteStartModeEnabled",
+            #    {
+            #        0x0033: 0,  # Stop mode
+            #        0x0066: 1,  # Manual mode
+            #        0x0099: 0,  # Auto mode
+            #        0x00CC: 0,  # Test on load mode
+            #    },
+            #),
             Reg_Mebay_alarms(),
         ]
 
+    def is_running(self):
+        return self.read_register(self.running_status_reg) > 0
+
     def device_init_late(self):
         super().device_init_late()
+	
+        # Set number phases to 1
+        self.dbus.add_path('/NrOfPhases', 1)
 
         # Additional static paths
         if "/FirmwareVersion" not in self.dbus:
             self.dbus.add_path("/FirmwareVersion", None)
 
-        # check if generator is running
-        is_running = self.read_register(self.running_status_reg) > 0
+        # Manual remote start overide
+        self.dbus.add_path('/RemoteStartModeEnabled', 1)
 
         # Add /Start path
         self.dbus.add_path(
             "/Start",
-            1 if is_running else 0,
+            1 if self.is_running() else 0,
             writeable=True,
             onchangecallback=self._start_genset,
         )
 
         # Add /EnableRemoteStartMode path, if GenComm System Control Function
-        self.dbus.add_path(
-            "/EnableRemoteStartMode",
-            0,
-            writeable=True,
-            onchangecallback=self._set_remote_start_mode,
-        )
+        #self.dbus.add_path(
+        #    "/EnableRemoteStartMode",
+        #    0,
+        #    writeable=True,
+        #    onchangecallback=self._set_remote_start_mode,
+        #)
 
     def _start_genset(self, _, value):
         if value:
+            # Can start if engine is still running -- a little fix to when 
+            # engine is in stopping mode
+            if self.is_running():
+                return False
+
+            # Turn on manual mode
+            self.modbus.write_registers(
+                0x2000, [self.SCF_PASSWORD, self.SCF_SELECT_MANUAL_MODE], unit=self.unit
+            )
+            # Send start command
             self.modbus.write_registers(
                 0x2000, [self.SCF_PASSWORD, self.SCF_TELEMETRY_START], unit=self.unit
             )
@@ -232,12 +249,12 @@ class Mebay_Generator(device.CustomName, device.ErrorId, device.Genset):
             )
         return True
 
-    def _set_remote_start_mode(self, _, value):
-        if value == 1:
-            self.modbus.write_registers(
-                0x2000, [self.SCF_PASSWORD, self.SCF_SELECT_AUTO_MODE], unit=self.unit
-            )
-        return True
+    #def _set_remote_start_mode(self, _, value):
+    #    if value == 1:
+    #        self.modbus.write_registers(
+    #            0x2000, [self.SCF_PASSWORD, self.SCF_SELECT_MANUAL_MODE], unit=self.unit
+    #        )
+    #    return True
 
 
 class Mebay_DC40x_Generator(Mebay_Generator):
@@ -251,5 +268,5 @@ models = {
 }
 
 probe.add_handler(
-    probe.ModelRegister(Reg_Mebay_ident(), models, methods=["rtu"], units=[16])
+    probe.ModelRegister(Reg_Mebay_ident(), models, methods=["rtu"], rates=[19200], units=[16])
 )
